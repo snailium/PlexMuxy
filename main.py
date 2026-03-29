@@ -2,7 +2,7 @@ import os
 import sys
 import shutil
 import subprocess
-from pymkv import MKVFile, MKVTrack
+from pymkv import MKVFile, MKVTrack, MKVAttachment
 import py7zr
 import re
 import patoolib
@@ -13,7 +13,7 @@ import logging
 from datetime import datetime
 from multiprocessing.pool import ThreadPool
 from rich.progress import Progress
-from tkinter import filedialog
+# from tkinter import filedialog
 from pathlib import Path
 from config import get_config
 from compressed import unzip
@@ -46,11 +46,6 @@ UNRAR_PATH = config["Font"]["Unrar_Path"]
 T_COUNT = config["multiprocessing"]["thread_count"]
 if SUFFIX_NAME == "":
     SUFFIX_NAME = "_Plex"
-if config["mkvmerge"]["path"] != "":
-    MKVMERGE_PATH = config["mkvmerge"]["path"]
-else:
-    print("mkvmerge path not set, using mkvmerge.exe in the working directory")
-    MKVMERGE_PATH = "mkvmerge"
 if type(T_COUNT) is str:
     if T_COUNT.isnumeric():
         T_COUNT = int(T_COUNT)
@@ -59,7 +54,7 @@ if type(T_COUNT) is str:
     else:
         T_COUNT = 1
 task_pool = ThreadPool(processes=T_COUNT)
-logging.basicConfig(filename=os.path.expandvars("%userprofile%/Documents/PlexMuxy/%s.log") % datetime.now().
+logging.basicConfig(filename=os.path.expandvars("/app/config/%s.log") % datetime.now().
                     strftime("%Y%m%d-%H%M%S"), encoding="utf-8", level=logging.DEBUG,
                     format="%(levelname)s:%(asctime)s:%(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
@@ -77,15 +72,13 @@ def mkv_mux_task(mkv_file_name: str, folder_other_file_list: list, font_list: li
         # Generate the task with MKV file
         major_progress.console.print(f"[orange]Task start: {mkv_file_name}")
         mkv_name_no_extension = mkv_file_name.replace(".mkv", "")
-        this_task = MKVFile(mkv_file_name, mkvmerge_path=MKVMERGE_PATH)
+        this_task = MKVFile(mkv_file_name)
         for track in this_task.tracks:
             sub_track_count += 1
             if track.track_type == "audio" or track.track_type == "subtitles":
                 if track.language == "und":
                     logging.warning("Track %s (%s track) language is undefined, set a language for it" % (
                         track.track_id, track.track_type))
-                    track.language_ietf = input("Input a language code for this track"
-                                                " (zh-Hans/zh-Hant/jp/en/ru or other language code): ")
 
         if DELETE_ORIGINAL_MKV:
             this_delete_list.append(mkv_file_name)
@@ -120,8 +113,7 @@ def mkv_mux_task(mkv_file_name: str, folder_other_file_list: list, font_list: li
                             this_forced_track = False
                         this_task.add_track(MKVTrack(item, track_name=track_name, default_track=this_default_track,
                                                      language=this_sub_info["mkv_language"],
-                                                     language_ietf=this_sub_info["ietf_language"],
-                                                     mkvmerge_path=MKVMERGE_PATH, forced_track=this_forced_track,
+                                                     forced_track=this_forced_track,
                                                      ))
                         skip_this_task = False
                         logging.info("Find " + this_sub_info["language"] + " subtitle: " + item)
@@ -172,9 +164,7 @@ def mkv_mux_task(mkv_file_name: str, folder_other_file_list: list, font_list: li
                                 else:
                                     track_name = this_sub_info["language"]
                                 this_sub_track = MKVTrack(item, track_name=track_name, default_track=False,
-                                                          language=this_sub_info["mkv_language"],
-                                                          language_ietf=this_sub_info["ietf_language"],
-                                                          mkvmerge_path=MKVMERGE_PATH)
+                                                          language=this_sub_info["mkv_language"])
                                 if this_sub_info["default_language"]:
                                     this_sub_track.default_track = True
                                     this_sub_track.forced_track = True
@@ -200,9 +190,7 @@ def mkv_mux_task(mkv_file_name: str, folder_other_file_list: list, font_list: li
                     else:
                         track_name = this_sub_info["language"]
                     this_sub_track = MKVTrack(sub_file, track_name=track_name, default_track=False,
-                                              language=this_sub_info["mkv_language"],
-                                              language_ietf=this_sub_info["ietf_language"],
-                                              mkvmerge_path=MKVMERGE_PATH)
+                                              language=this_sub_info["mkv_language"])
                     if this_sub_info["default_language"]:
                         this_sub_track.default_track = True
                         this_sub_track.forced_track = True
@@ -226,12 +214,23 @@ def mkv_mux_task(mkv_file_name: str, folder_other_file_list: list, font_list: li
         # Add fonts
         for font in font_list:
             font = "Fonts/" + font
-            this_task.add_attachment(font)
+            font_attach = MKVAttachment(font)
+
+            font_lower = font.lower()
+            if font_lower.endswith('.ttf'):
+                font_attach.mime_type = 'application/x-truetype-font'
+            elif font_lower.endswith('.otf'):
+                font_attach.mime_type = 'application/vnd.ms-opentype'
+            else:
+                font_attach.mime_type = 'application/octet-stream'
+
+            this_task.add_attachment(font_attach)
+
         if not skip_this_task:
             task_progress_name = "EP " + str(this_ep_num) + " Task"
             this_task_progress = major_progress.add_task(task_progress_name, total=None, visible=True)
             new_mkv_name = mkv_name_no_extension + SUFFIX_NAME + ".mkv"
-            this_task.mux(new_mkv_name, silent=True, ignore_warning=True)
+            this_task.mux(new_mkv_name, silent=True)
             major_progress.console.print("[green]Mux successfully: " + new_mkv_name)
             major_progress.console.print("MKVMerge raised error: " + new_mkv_name)
             major_progress.update(major_process_task, advance=1, visible=True)
@@ -245,7 +244,7 @@ def main():
     delete_list = []
     move_list = []
 
-    folder_selected = filedialog.askdirectory()
+    folder_selected = "/media"
     os.chdir(folder_selected)
     logging.info("Using working directory: " + os.getcwd())
     folder_list = os.listdir()
