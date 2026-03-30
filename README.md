@@ -1,7 +1,7 @@
 # PlexMuxy
 PlexMuxy is a Python script to multiplex video with each independent audio, subtitle and fonts in bulk, in order to allow Plex Media Server to present media best in visual. 
 
-English README | [中文 README](https://github.com/Masterain98/PlexMuxy/blob/main/README.CN.md)
+English README | [中文 README](README.CN.md)
 
 ## Feature
 

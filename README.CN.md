@@ -2,7 +2,7 @@
 
 PlexMuxy 是一个将字幕组/压制组发布作品进行封装的 Python 脚本，它会将外挂字幕、外挂音频、字幕字体文件进行打包，以允许 Plex 服务器能以最好的方法使用这些资源。
 
-中文 README | [English README](https://github.com/Masterain98/PlexMuxy/blob/main/README.md)
+中文 README | [English README](README.md)
 
 ## 功能和说明
 
