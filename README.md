@@ -26,6 +26,16 @@ English README | [中文 README](https://github.com/Masterain98/PlexMuxy/blob/ma
 
   - Based on user's setting, remove or move the original files to avoid Plex Server's scanning.
 
+## Docker usage
+
+```bash
+# Build the docker image
+docker build -t plexmuxy-docker .
+
+# Run the docker image
+# The -v /path/to/media:/media part maps the /path/to/media directory on your host machine to the /media directory inside the container.
+docker run -it --rm -v /path/to/media:/media plexmuxy-docker
+```
 
 ## Usage
 

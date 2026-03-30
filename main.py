@@ -2,7 +2,7 @@ import os
 import sys
 import shutil
 import subprocess
-from pymkv import MKVFile, MKVTrack, MKVAttachment
+import json
 import py7zr
 import re
 import patoolib
@@ -66,74 +66,62 @@ def mkv_mux_task(mkv_file_name: str, folder_other_file_list: list, font_list: li
     skip_this_task = True
     this_delete_list = []
     this_move_list = []
-    sub_track_count = 0
 
     if SUFFIX_NAME not in mkv_file_name:
-        # Generate the task with MKV file
         major_progress.console.print(f"[orange]Task start: {mkv_file_name}")
         mkv_name_no_extension = mkv_file_name.replace(".mkv", "")
-        this_task = MKVFile(mkv_file_name)
-        for track in this_task.tracks:
-            sub_track_count += 1
-            if track.track_type == "audio" or track.track_type == "subtitles":
-                if track.language == "und":
-                    logging.warning("Track %s (%s track) language is undefined, set a language for it" % (
-                        track.track_id, track.track_type))
+        new_mkv_name = mkv_name_no_extension + SUFFIX_NAME + ".mkv"
+        mkvmerge_path = config["mkvmerge"]["path"]
+
+        # Run mkvmerge -J to identify original tracks
+        try:
+            identify_cmd = [mkvmerge_path, "-J", mkv_file_name]
+            result = subprocess.run(identify_cmd, capture_output=True, text=True, check=True)
+            mkv_info = json.loads(result.stdout)
+            for track in mkv_info.get("tracks", []):
+                track_type = track.get("type", "")
+                track_id = track.get("id", "")
+                language = track.get("properties", {}).get("language", "und")
+                if track_type in ("audio", "subtitles") and language == "und":
+                    logging.warning(f"Track {track_id} ({track_type} track) language is undefined, set a language for it")
+        except Exception as e:
+            logging.error(f"Failed to identify {mkv_file_name}: {e}")
+            return {"delete_list": [], "move_list": []}
 
         if DELETE_ORIGINAL_MKV:
             this_delete_list.append(mkv_file_name)
         else:
             this_move_list.append(mkv_file_name)
 
+        # Build mkvmerge command
+        mkvmerge_cmd = [mkvmerge_path, "-o", new_mkv_name, mkv_file_name]
+
         # Episode name
         ep_romaji_name = re.sub(r"\[(?!\d+\]).*?\]", "", mkv_name_no_extension).strip()
         print(f"Episode name: {ep_romaji_name}")
 
+        ass_files_to_add = []
+        mka_files_to_add = []
+
         for item in folder_other_file_list:
-            # Match resources based on file name
             item_name_no_extension = Path(item).stem
             item_romaji_name = re.sub(r"\[(?!\d+\]).*?\]", "", item_name_no_extension).strip()
+            
             if mkv_name_no_extension in item or ep_romaji_name in item_romaji_name:
                 print(f"Find associated file with same name: {item}")
                 if item.endswith(".ass"):
-                    # Add Subtitle track
-                    sub_track_count += 1
-                    this_sub_info = subtitle_info_checker(item)
-                    logging.info("Subtitle info: " + str(this_sub_info))
-                    if this_sub_info["language"] != "":
-                        if config["Subtitle"]["ShowSubtitleAuthorInTrackName"]:
-                            track_name = this_sub_info["language"] + " " + this_sub_info["sub_author"]
-                        else:
-                            track_name = this_sub_info["language"]
-                        if this_sub_info["default_language"]:
-                            this_default_track = True
-                            this_forced_track = True
-                        else:
-                            this_default_track = False
-                            this_forced_track = False
-                        this_task.add_track(MKVTrack(item, track_name=track_name, default_track=this_default_track,
-                                                     language=this_sub_info["mkv_language"],
-                                                     forced_track=this_forced_track,
-                                                     ))
-                        skip_this_task = False
-                        logging.info("Find " + this_sub_info["language"] + " subtitle: " + item)
-
-                        if DELETE_SUB:
-                            this_delete_list.append(item)
-                        else:
-                            this_move_list.append(item)
+                    ass_files_to_add.append(item)
+                    if DELETE_SUB:
+                        this_delete_list.append(item)
+                    else:
+                        this_move_list.append(item)
                 if item.endswith(".mka"):
-                    # Add MKA track
-                    skip_this_task = False
-                    this_task.add_track(item)
-                    logging.info("Find associated audio: " + item)
+                    mka_files_to_add.append(item)
                     if DELETE_ORIGINAL_MKA:
                         this_delete_list.append(item)
                     else:
                         this_move_list.append(item)
             else:
-                # Expand the search range for other subgroups
-                # By matching up the episode number
                 this_ep_num = re.search(r'(\[)(SP|sp)?(\d{2})(])', mkv_name_no_extension)
                 if this_ep_num is None:
                     this_ep_num = re.search(r'(\[)(Special)|(OVA)(])', mkv_name_no_extension)
@@ -141,102 +129,101 @@ def mkv_mux_task(mkv_file_name: str, folder_other_file_list: list, font_list: li
                     this_ep_num = this_ep_num.group(0)
                     sub_matched = False
                     if this_ep_num in item and item != mkv_file_name:
-                        # this_ep_num = [01]
                         sub_matched = True
                     elif this_ep_num.replace("[", " ").replace("]", " ") in item and item != mkv_file_name:
-                        # this_ep_num =  01 (one space before and after the number)
                         sub_matched = True
                     elif this_ep_num.replace("[", ".").replace("]", ".") in item and item != mkv_file_name:
-                        # this_ep_num =  .01. (one dot before and after the number)
                         sub_matched = True
                     elif this_ep_num.replace("[", " ").replace("]", ".") in item and item != mkv_file_name:
-                        # this_ep_num =  01. (one space before and one dot after the number)
                         sub_matched = True
+                        
                     if sub_matched:
                         logging.info("Using ep number " + this_ep_num + " to match subtitle file")
                         if item.endswith(".ass"):
-                            sub_track_count += 1
-                            this_sub_info = subtitle_info_checker(item)
-                            # this_progress.console.print(this_sub_info)
-                            if this_sub_info["language"] != "":
-                                if config["Subtitle"]["ShowSubtitleAuthorInTrackName"]:
-                                    track_name = this_sub_info["language"] + " " + this_sub_info["sub_author"]
-                                else:
-                                    track_name = this_sub_info["language"]
-                                this_sub_track = MKVTrack(item, track_name=track_name, default_track=False,
-                                                          language=this_sub_info["mkv_language"])
-                                if this_sub_info["default_language"]:
-                                    this_sub_track.default_track = True
-                                    this_sub_track.forced_track = True
-                                skip_this_task = False
-                                this_task.add_track(this_sub_track)
-                                logging.info("Find " + this_sub_info["language"] + " subtitle: " + item)
+                            ass_files_to_add.append(item)
+                            if DELETE_SUB:
+                                this_delete_list.append(item)
+                            else:
+                                this_move_list.append(item)
 
-                                if DELETE_SUB:
-                                    this_delete_list.append(item)
-                                else:
-                                    this_move_list.append(item)
-
-        if sub_track_count == 0:
+        if len(ass_files_to_add) == 0 and len(mka_files_to_add) == 0:
             this_ep_num = "main movie"
-            # No episode number found, most likely a movie, include all ass files
-            logging.info("No EP number found, use movie mode")
+            logging.info("No EP number found or no subs, use movie mode")
             all_ass_files = [file for file in folder_other_file_list if file.endswith(".ass")]
             for sub_file in all_ass_files:
-                this_sub_info = subtitle_info_checker(sub_file)
-                if this_sub_info["language"] != "":
-                    if config["Subtitle"]["ShowSubtitleAuthorInTrackName"]:
-                        track_name = this_sub_info["language"] + " " + this_sub_info["sub_author"]
-                    else:
-                        track_name = this_sub_info["language"]
-                    this_sub_track = MKVTrack(sub_file, track_name=track_name, default_track=False,
-                                              language=this_sub_info["mkv_language"])
-                    if this_sub_info["default_language"]:
-                        this_sub_track.default_track = True
-                        this_sub_track.forced_track = True
-                    skip_this_task = False
-                    this_task.add_track(this_sub_track)
-                    logging.info("Find " + this_sub_info["language"] + " subtitle: " + sub_file)
-                    if DELETE_SUB:
-                        this_delete_list.append(sub_file)
-                    else:
-                        this_move_list.append(sub_file)
+                ass_files_to_add.append(sub_file)
+                if DELETE_SUB:
+                    this_delete_list.append(sub_file)
+                else:
+                    this_move_list.append(sub_file)
 
-        # Check all tracks, if only one subtitle track, then mark it as default
-        if sub_track_count == 1:
-            for track in this_task.tracks:
-                if track.track_type == "subtitles":
-                    track.default_track = True
-                    try:
-                        logging.info("Set default subtitle track: " + track.track_name)
-                    except TypeError:
-                        logging.info("Set default subtitle track: " + "None")
-        # Add fonts
+        for mka in mka_files_to_add:
+            skip_this_task = False
+            mkvmerge_cmd.extend([mka])
+            logging.info("Find associated audio: " + mka)
+
+        for item in ass_files_to_add:
+            skip_this_task = False
+            this_sub_info = subtitle_info_checker(item)
+            logging.info("Subtitle info: " + str(this_sub_info))
+            
+            if this_sub_info["language"] != "":
+                if config["Subtitle"]["ShowSubtitleAuthorInTrackName"]:
+                    track_name = this_sub_info["language"] + " " + this_sub_info["sub_author"]
+                else:
+                    track_name = this_sub_info["language"]
+                    
+                is_default = this_sub_info["default_language"]
+                mkvmerge_cmd.extend([
+                    "--language", f"0:{this_sub_info['mkv_language']}",
+                    "--track-name", f"0:{track_name}",
+                    "--default-track", f"0:{'yes' if is_default else 'no'}",
+                    "--forced-display-flag", f"0:{'yes' if is_default else 'no'}",
+                    item
+                ])
+                logging.info("Find " + this_sub_info["language"] + " subtitle: " + item)
+
+        if len(ass_files_to_add) == 1:
+            try:
+                idx = mkvmerge_cmd.index("--default-track")
+                mkvmerge_cmd[idx + 1] = "0:yes"
+                mkvmerge_cmd[idx + 3] = "0:yes"
+            except ValueError:
+                pass
+
         for font in font_list:
-            font = "Fonts/" + font
-            font_attach = MKVAttachment(font)
-
-            font_lower = font.lower()
+            skip_this_task = False
+            font_path = "Fonts/" + font
+            font_lower = font_path.lower()
             if font_lower.endswith('.ttf'):
-                font_attach.mime_type = 'application/x-truetype-font'
+                mime = 'application/x-truetype-font'
             elif font_lower.endswith('.otf'):
-                font_attach.mime_type = 'application/vnd.ms-opentype'
+                mime = 'application/vnd.ms-opentype'
             else:
-                font_attach.mime_type = 'application/octet-stream'
-
-            this_task.add_attachment(font_attach)
+                mime = 'application/octet-stream'
+            mkvmerge_cmd.extend(["--attachment-mime-type", mime, "--attach-file", font_path])
 
         if not skip_this_task:
             task_progress_name = "EP " + str(this_ep_num) + " Task"
             this_task_progress = major_progress.add_task(task_progress_name, total=None, visible=True)
-            new_mkv_name = mkv_name_no_extension + SUFFIX_NAME + ".mkv"
-            this_task.mux(new_mkv_name, silent=True)
-            major_progress.console.print("[green]Mux successfully: " + new_mkv_name)
-            major_progress.console.print("MKVMerge raised error: " + new_mkv_name)
+            
+            try:
+                result = subprocess.run(mkvmerge_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                if result.returncode < 2:
+                    major_progress.console.print("[green]Mux successfully: " + new_mkv_name)
+                    major_progress.console.print("MKVMerge raised error: " + new_mkv_name)
+                else:
+                    major_progress.console.print("[red]MKVMerge raised error: " + new_mkv_name)
+                    logging.error(f"MKVMerge Error: {result.stderr.decode('utf-8', errors='ignore')}")
+            except Exception as e:
+                major_progress.console.print("[red]Error executing mkvmerge: " + new_mkv_name)
+                logging.error(f"Execution Error: {str(e)}")
+                
             major_progress.update(major_process_task, advance=1, visible=True)
             major_progress.update(this_task_progress, completed=True, visible=False)
         else:
-            major_progress.console.print("No task for this MKV" + mkv_file_name)
+            major_progress.console.print("No task for this MKV " + mkv_file_name)
+            
     return {"delete_list": this_delete_list, "move_list": this_move_list}
 
 
